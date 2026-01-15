@@ -302,4 +302,13 @@ void AES::getKeyAt(unsigned char key[][4], int index){
 
 AES::~AES()
 {
+    clearSensitiveData();
+}
+
+void AES::clearSensitiveData()
+{
+    // 清除密钥
+    memset(mKey, 0, sizeof(mKey));
+    // 清除扩展密钥
+    memset(mW, 0, sizeof(mW));
 }

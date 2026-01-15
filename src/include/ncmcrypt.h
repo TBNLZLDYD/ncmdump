@@ -66,6 +66,8 @@ public:
 	~NeteaseCrypt();
 
 public:
-	void Dump(std::string const&);
-	void FixMetadata();
+    void Dump(std::string const&);
+    void FixMetadata();
+    // 安全清除敏感数据
+    void clearSensitiveData();
 };

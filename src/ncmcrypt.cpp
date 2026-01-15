@@ -18,6 +18,9 @@
 #pragma warning(disable:4267)
 #pragma warning(disable:4244)
 
+// 网易云音乐NCM格式固定密钥
+// 注意：这些密钥是NCM格式解密的固定要求，不能修改
+// 修改这些密钥会导致无法解密任何NCM文件
 const unsigned char NeteaseCrypt::sCoreKey[17] = {0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57, 0};
 const unsigned char NeteaseCrypt::sModifyKey[17] = {0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28, 0};
 
@@ -25,28 +28,30 @@ const unsigned char NeteaseCrypt::mPng[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A,
 
 static void aesEcbDecrypt(const unsigned char *key, std::string &src, std::string &dst)
 {
-    int i, n;
+    int n = src.length() >> 4;
     unsigned char out[16];
-
-    n = src.length() >> 4;
 
     dst.clear();
 
     AES aes(key);
 
-    for (i = 0; i < n - 1; i++)
+    for (int i = 0; i < n - 1; i++)
     {
-        aes.decrypt((unsigned char *)src.c_str() + (i << 4), out);
-        dst += std::string((char *)out, 16);
+        aes.decrypt(reinterpret_cast<const unsigned char *>(src.c_str()) + (i << 4), out);
+        dst += std::string(reinterpret_cast<const char *>(out), 16);
     }
 
-    aes.decrypt((unsigned char *)src.c_str() + (i << 4), out);
-    char pad = out[15];
-    if (pad > 16)
+    if (n > 0)
     {
-        pad = 0;
+        int i = n - 1;
+        aes.decrypt(reinterpret_cast<const unsigned char *>(src.c_str()) + (i << 4), out);
+        char pad = out[15];
+        if (pad > 16)
+        {
+            pad = 0;
+        }
+        dst += std::string(reinterpret_cast<const char *>(out), 16 - pad);
     }
-    dst += std::string((char *)out, 16 - pad);
 }
 
 NeteaseMusicMetadata::~NeteaseMusicMetadata()
@@ -151,35 +156,43 @@ bool NeteaseCrypt::isNcmFile()
 
 int NeteaseCrypt::read(char *s, std::streamsize n)
 {
+    if (s == nullptr || n <= 0 || n > 1024 * 1024) // 限制单次读取大小，防止内存溢出
+    {
+        throw std::invalid_argument("Invalid read parameters");
+    }
+    
     mFile.read(s, n);
 
-    int gcount = mFile.gcount();
+    std::streamsize gcount = mFile.gcount();
 
     if (gcount <= 0)
     {
         throw std::invalid_argument("Can't read file");
     }
 
-    return gcount;
+    return static_cast<int>(gcount);
 }
 
 void NeteaseCrypt::buildKeyBox(unsigned char *key, int keyLen)
 {
-    int i;
-    for (i = 0; i < 256; ++i)
+    // 验证输入参数
+    if (key == nullptr || keyLen <= 0 || keyLen > 1024 * 1024) // 限制密钥长度，防止异常行为
     {
-        mKeyBox[i] = (unsigned char)i;
+        throw std::invalid_argument("Invalid key parameters");
+    }
+    
+    for (int i = 0; i < 256; ++i)
+    {
+        mKeyBox[i] = static_cast<unsigned char>(i);
     }
 
-    unsigned char swap = 0;
-    unsigned char c = 0;
     unsigned char last_byte = 0;
     unsigned char key_offset = 0;
 
-    for (i = 0; i < 256; ++i)
+    for (int i = 0; i < 256; ++i)
     {
-        swap = mKeyBox[i];
-        c = ((swap + last_byte + key[key_offset++]) & 0xff);
+        unsigned char swap = mKeyBox[i];
+        unsigned char c = static_cast<unsigned char>((swap + last_byte + key[key_offset++]) & 0xff);
         if (key_offset >= keyLen)
             key_offset = 0;
         mKeyBox[i] = mKeyBox[c];
@@ -246,7 +259,7 @@ void NeteaseCrypt::FixMetadata()
     // tag->setComment(TagLib::String("Create by taurusxin/ncmdump.", TagLib::String::UTF8));
 
     audioFile->save();
-    audioFile->~File();
+    delete audioFile;
 }
 
 void NeteaseCrypt::Dump(std::string const &outputDir = "")
@@ -255,7 +268,20 @@ void NeteaseCrypt::Dump(std::string const &outputDir = "")
     {
         mDumpFilepath = std::filesystem::u8path(mFilepath);
     } else {
-        mDumpFilepath = std::filesystem::u8path(outputDir) / std::filesystem::u8path(mFilepath).filename();
+        // 确保输出目录是绝对路径，防止相对路径攻击
+        std::filesystem::path absOutputDir = std::filesystem::absolute(std::filesystem::u8path(outputDir));
+        // 获取输入文件的文件名，确保不包含路径信息
+        std::filesystem::path filename = std::filesystem::u8path(mFilepath).filename();
+        
+        // 构建输出路径
+        mDumpFilepath = absOutputDir / filename;
+        
+        // 确保输出路径位于指定的输出目录内
+        std::filesystem::path absDumpPath = std::filesystem::absolute(mDumpFilepath);
+        if (!std::filesystem::equivalent(absDumpPath.parent_path(), absOutputDir))
+        {
+            throw std::invalid_argument("Output path is outside the specified output directory.");
+        }
     }
 
     std::vector<unsigned char> buffer(0x8000);
@@ -264,7 +290,7 @@ void NeteaseCrypt::Dump(std::string const &outputDir = "")
 
     while (!mFile.eof())
     {
-        int n = read((char *)buffer.data(), buffer.size());
+        int n = read(reinterpret_cast<char *>(buffer.data()), buffer.size());
 
         for (int i = 0; i < n; i++)
         {
@@ -290,7 +316,7 @@ void NeteaseCrypt::Dump(std::string const &outputDir = "")
             output.open(mDumpFilepath, std::ofstream::out | std::ofstream::binary);
         }
 
-        output.write((char *)buffer.data(), n);
+        output.write(reinterpret_cast<char *>(buffer.data()), n);
     }
 
     output.flush();
@@ -299,12 +325,26 @@ void NeteaseCrypt::Dump(std::string const &outputDir = "")
 
 NeteaseCrypt::~NeteaseCrypt()
 {
+    clearSensitiveData();
+    mFile.close();
+}
+
+void NeteaseCrypt::clearSensitiveData()
+{
+    // 清除密钥盒
+    memset(mKeyBox, 0, sizeof(mKeyBox));
+    // 清除元数据
     if (mMetaData != NULL)
     {
         delete mMetaData;
+        mMetaData = NULL;
     }
-
-    mFile.close();
+    // 清除图片数据
+    mImageData.clear();
+    // 清除文件路径
+    mFilepath.clear();
+    // 清除转储文件路径
+    mDumpFilepath.clear();
 }
 
 NeteaseCrypt::NeteaseCrypt(std::string const &path)

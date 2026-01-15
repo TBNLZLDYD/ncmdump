@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <string.h>
 #include <stdio.h>
@@ -12,6 +12,8 @@ public:
     virtual ~AES();
     void encrypt(const unsigned char data[16], unsigned char out[16]);
     void decrypt(const unsigned char data[16], unsigned char out[16]);
+    // 安全清除敏感数据
+    void clearSensitiveData();
 
 private:
     //
